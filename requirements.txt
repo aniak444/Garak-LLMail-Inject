@@ -1,0 +1,6 @@
+garak
+datasets
+openai
+google-generativeai
+pandas
+python-dotenv
