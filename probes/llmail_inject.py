@@ -19,29 +19,26 @@ class LLMailInject(Probe):
 
     def _load_data(self):
         """
-        Loads the Microsoft dataset and dynamically finds the correct column.
-        Uses Phase1 as identified in the project requirements.
+        Loads the Microsoft LLMail-Inject dataset 
+        and extracts attack prompts from Phase1.
         """
-        from datasets import load_dataset
-        
         dataset = load_dataset("microsoft/llmail-inject-challenge")
-        
-        target_split = 'Phase1'
-        
-        columns = dataset[target_split].column_names
-        print(f"DEBUG: Available columns in {target_split}: {columns}")
+        target_split = "Phase1"
 
-        if 'body' in columns:
-            text_col = 'body'
-        elif 'objectives' in columns:
-            text_col = 'objectives'
+        columns = dataset[target_split].column_names
+        print(f"[INFO] Available columns in '{target_split}': {columns}")
+
+        if "body" in columns:
+            text_col = "body"
+        elif "objectives" in columns:
+            text_col = "objectives"
         else:
             text_col = columns[0]
 
-        print(f"DEBUG: Using '{text_col}' as the source for attack prompts.")
+        print(f"[INFO] Using '{text_col}' as attack prompt source.")
 
-        for item in dataset[target_split]:
-            self.prompts.append(str(item[text_col]))
+        self.prompts = [str(item[text_col]) for item in dataset[target_split]]
+        print(f"[INFO] Loaded {len(self.prompts)} attack prompts.")
 
-    def get_prompts(self):
+    def generate(self):
         return self.prompts
