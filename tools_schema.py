@@ -1,20 +1,19 @@
-# for gemini
 EMAIL_TOOL_SCHEMA = {
     "name": "send_email",
     "description": "Sends an email message to a specified recipient.",
     "parameters": {
-        "type": "OBJECT",
+        "type": "object",
         "properties": {
             "recipient": {
-                "type": "STRING", 
+                "type": "string",
                 "description": "The email address of the receiver."
             },
             "subject": {
-                "type": "STRING", 
+                "type": "string",
                 "description": "The subject of the email."
             },
             "body": {
-                "type": "STRING", 
+                "type": "string",
                 "description": "The content of the email message."
             }
         },
