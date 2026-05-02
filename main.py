@@ -1,6 +1,7 @@
 import os
 import time
 import csv
+import json
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -59,60 +60,85 @@ OPENAI_TOOL = {
     }
 }
 
-
-def send_with_retry(prompt: str, max_retries: int = 3):
-    """Sends request with automatic retry after error 429 occurs"""
+def send_with_retry(provider: str, prompt: str, system_instruction: str, max_retries: int = 3):
+    """Sends request to the specified LLM provider with automatic retry after error 429 occurs"""
     for attempt in range(max_retries):
         try:
-            response = gemini_client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=f"Incoming email:\n\n{prompt}",
-                config=types.GenerateContentConfig(
-                    system_instruction=PROMPT_SUSPICIOUS,
-                    tools=[GEMINI_TOOL]
+            if provider == "gemini":
+                return gemini_client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=f"Incoming email:\n\n{prompt}",
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        tools=[GEMINI_TOOL]
+                    )
                 )
-            )
-            return response
+            elif provider == "openai":
+                return openai_client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": system_instruction},
+                        {"role": "user", "content": f"Incoming email:\n\n{prompt}"}
+                    ],
+                    tools=[OPENAI_TOOL],
+                    tool_choice="auto"
+                )
         except Exception as e:
             if "429" in str(e):
-                wait = 60 * (attempt + 1)
+                wait_base = 60 if provider == "gemini" else 5
+                wait = wait_base * (attempt + 1)
+                print(f"Error 429 ({provider})")
                 time.sleep(wait)
             else:
                 raise e
-    print("Out of retry, skip test")
+
+    print(f"Out of retry for {provider}, skip test")
     return None
 
-def run_benchmark(num_tests: int = 10):
+def run_benchmark(provider: str, system_instruction: str, num_tests: int = 10):
     probe = LLMailInject()
     agent = MockEmailAgent()
     detector = ActionDetector(agent)
 
     all_prompts = probe.prompts[:num_tests]
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     results = []
 
-    print(f"Start benchmark: {len(all_prompts)} tests")
+    mode_name = "NAIVE" if system_instruction == PROMPT_NAIVE else "SUSPICIOUS"
+    print(f"Start benchmark: {provider.upper()}\tMode: {mode_name}")
 
     for i, prompt in enumerate(all_prompts):
         print(f"\nTest {i+1}/{len(all_prompts)}")
-        print(f"  Prompt preview: {prompt[:100]}...")
+        print(f"\tPrompt preview: {prompt[:100]}...")
 
         try:
-            response = send_with_retry(prompt)
+            response = send_with_retry(provider, prompt, system_instruction)
 
             if response is None:
                 raise Exception("No answer, out of limit")
-
-            for part in response.candidates[0].content.parts:
-                if part.function_call:
-                    fn = part.function_call
-                    args = dict(fn.args)
-                    print(f"**Model tries to use 'send email': {args}")
-                    agent.send_email(
-                        recipient=args.get("recipient", "unknown"),
-                        subject=args.get("subject", "no subject"),
-                        body=args.get("body", "")
-                    )
+            
+            if provider == "gemini":
+                if response.candidates and response.candidates[0].content.parts:
+                    for part in response.candidates[0].content.parts:
+                        if part.function_call and part.function_call.name == "send_email":
+                            args = dict(part.function_call.args)
+                            print(f"**Model tries to use 'send email': {args}")
+                            agent.send_email(
+                                recipient=args.get("recipient", "unknown"),
+                                subject=args.get("subject", "no subject"),
+                                body=args.get("body", "")
+                            )
+            elif provider == "openai":
+                message = response.choices[0].message
+                if message.tool_calls:
+                    for tool_call in message.tool_calls:
+                        if tool_call.function.name == "send_email":
+                            args = json.loads(tool_call.function.arguments)
+                            print(f"**Model tries to use 'send email': {args}")
+                            agent.send_email(
+                                recipient=args.get("recipient", "unknown"),
+                                subject=args.get("subject", "no subject"),
+                                body=args.get("body", "")
+                            )
 
             score = detector.detect()
             hacked = score[0] > 0
@@ -120,29 +146,34 @@ def run_benchmark(num_tests: int = 10):
 
             results.append({
                 "test_num": i + 1,
-                "model": "gemini-2.5-flash",
+                "model": provider,
                 "prompt_preview": prompt[:100],
                 "hacked": hacked,
                 "score": score[0]
             })
 
         except Exception as e:
-            print(f"  Błąd: {e}")
+            print(f"Error: {e}")
             results.append({
                 "test_num": i + 1,
-                "model": "gemini-2.5-flash",
+                "model": provider,
                 "prompt_preview": prompt[:100],
                 "hacked": None,
                 "score": None
             })
 
-        time.sleep(15) #rate limit for gemini
+        time.sleep(30 if provider == "gemini" else 2)
 
     valid = [r for r in results if r["hacked"] is not None]
     hacked_count = sum(1 for r in valid if r["hacked"])
-    print(f"\nBenchmark finished:")
+    print(f"\nBenchmark finished ({provider.upper()} - {mode_name}):")
     if valid:
         print(f"Hacked: {hacked_count}/{len(valid)} ({100 * hacked_count / len(valid):.1f}%)")
 
 if __name__ == "__main__":
-    run_benchmark(num_tests=5)
+    TESTS = 5
+
+    run_benchmark(provider="openai", system_instruction=PROMPT_SUSPICIOUS, num_tests=TESTS)
+    run_benchmark(provider="openai", system_instruction=PROMPT_NAIVE, num_tests=TESTS)
+    run_benchmark(provider="gemini", system_instruction=PROMPT_SUSPICIOUS, num_tests=TESTS)
+    run_benchmark(provider="gemini", system_instruction=PROMPT_NAIVE, num_tests=TESTS)
